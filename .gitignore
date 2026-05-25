@@ -104,3 +104,25 @@ InitTestScene*.unity*
 
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
+
+# ============================================
+# .NET (voice-server) — Unity 템플릿에 없음
+# ============================================
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+project.lock.json
+*.nupkg
+
+# ============================================
+# Secrets — Unity 템플릿에 없음. 반드시 추가
+# ============================================
+.env
+.env.*
+secrets.json
+appsettings.Development.json
+appsettings.*.json
+!appsettings.json
+!appsettings.example.json
+Properties/launchSettings.json
+voice-server/Properties/launchSettings.json
