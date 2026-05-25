@@ -126,3 +126,4 @@ appsettings.*.json
 !appsettings.example.json
 Properties/launchSettings.json
 voice-server/Properties/launchSettings.json
+STTServer/Properties/launchSettings.json
