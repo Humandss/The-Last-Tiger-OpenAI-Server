@@ -425,7 +425,20 @@ public static class Program
 5. 절대로 대화하지 마라. JSON만 출력하라.
 
 [출력 스키마]
-{""raw_text"":string,""confidence"":number,""commands"":[{""target_role"":""driver|gunner|loader"",""intent"":""...(아래 목록 참조)..."",""intensity"":""small|normal|large"",""range_meters"":number,""confidence"":number,""raw_text"":string}]}
+{
+  ""raw_text"":   string,
+  ""confidence"": number,
+  ""commands"": [
+    {
+      ""target_role"":  ""driver|gunner|loader"",
+      ""intent"":       ""...(아래 목록 참조)..."",
+      ""intensity"":    ""small|normal|large"",
+      ""range_meters"": number,
+      ""confidence"":   number,
+      ""raw_text"":     string
+    }
+  ]
+}
 
 [필드 규칙]
 - range_meters: 숫자 없으면 반드시 -1
