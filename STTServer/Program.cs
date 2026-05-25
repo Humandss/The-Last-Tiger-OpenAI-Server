@@ -17,6 +17,8 @@ public static class Program
     private static ClientWebSocket _realtime;
     private static readonly StringBuilder _modelText = new StringBuilder();
     private static int inFlight = 0;
+    // 각 요청별 고유 번호. inFlight 타임아웃 타이머가 자기 요청만 리셋하도록 보장.
+    private static int _requestGen = 0;
 
     public static async Task Main()
     {
@@ -97,6 +99,8 @@ public static class Program
             return;
         }
 
+        var gen = Interlocked.Increment(ref _requestGen);
+
         try
         {
             await SendRealtime(new { type = "input_audio_buffer.commit" });
@@ -112,12 +116,14 @@ public static class Program
                     //    (여기서 짧은 instructions 넣으면 session 규칙을 덮어써서 오동작)
                 }
             });
-            Console.WriteLine("[CommitAndRequest] OK");
+            Console.WriteLine($"[CommitAndRequest] OK (gen={gen})");
             // 안전장치: 10초 후에도 response.done이 안 오면 자동 해제
+            //   gen 비교로 그 사이 시작된 새 요청의 inFlight를 죽이지 않도록 보장
             _ = Task.Delay(10000).ContinueWith(_ =>
             {
+                if (Volatile.Read(ref _requestGen) != gen) return;
                 if (Interlocked.CompareExchange(ref inFlight, 0, 1) == 1)
-                    Console.WriteLine("[CommitAndRequest] inFlight timeout reset");
+                    Console.WriteLine($"[CommitAndRequest] inFlight timeout reset (gen={gen})");
             });
         }
         catch (Exception e)
@@ -145,6 +151,7 @@ public static class Program
                     if (res.MessageType == System.Net.WebSockets.WebSocketMessageType.Close)
                     {
                         Console.WriteLine("Realtime closed.");
+                        NotifyUnityRealtimeDown("openai_realtime_closed");
                         return;
                     }
                     sb.Append(Encoding.UTF8.GetString(buf, 0, res.Count));
@@ -224,6 +231,17 @@ public static class Program
         }
 
         Console.WriteLine("[RT] receive loop ended.");
+        NotifyUnityRealtimeDown("openai_realtime_disconnected");
+    }
+
+    // OpenAI Realtime 연결이 끊겼을 때 Unity 클라이언트에 알림.
+    // Unity는 type="server_status", connected=false 를 받으면
+    // 음성 명령이 더 이상 처리되지 않음을 UI로 표시해야 함.
+    private static void NotifyUnityRealtimeDown(string reason)
+    {
+        var msg = JsonSerializer.Serialize(new { type = "server_status", connected = false, reason });
+        UnityHub.BroadcastToAll(msg);
+        Console.WriteLine($"[NOTIFY UNITY] server_status connected=false reason={reason}");
     }
 
     // =========================================================
@@ -458,8 +476,9 @@ STEP 3. intent도 역할도 불분명하면 → commands=[]
 - 숫자 없이 거리/레인지만 → set_range 금지
 
 [다중 명령 허용]
-복합 명령(예: 전진하면서 조준)은 commands 배열에 2개 이상 가능.
+복합 명령(예: 사거리 800 조준)은 commands 배열에 2개 이상 가능.
 단 각 confidence >= 0.6 일 때만 포함.
+driver는 음성 명령이 없으므로 복합 명령에서도 driver 부분은 제외하고 나머지만 포함.
 
 [few-shot 예시 — 역할 추론 집중]
 입력: 사격
@@ -472,22 +491,25 @@ STEP 3. intent도 역할도 불분명하면 → commands=[]
 출력: {""raw_text"":""조준"",""confidence"":0.9,""commands"":[{""target_role"":""gunner"",""intent"":""aim_at"",""intensity"":""normal"",""range_meters"":-1,""confidence"":0.9,""raw_text"":""조준""}]}
 
 입력: 전진
-출력: {""raw_text"":""전진"",""confidence"":0.95,""commands"":[{""target_role"":""driver"",""intent"":""move_forward"",""intensity"":""normal"",""range_meters"":-1,""confidence"":0.95,""raw_text"":""전진""}]}
+출력: {""raw_text"":""전진"",""confidence"":0.0,""commands"":[]}
 
 입력: 전진 천천히
-출력: {""raw_text"":""전진 천천히"",""confidence"":0.9,""commands"":[{""target_role"":""driver"",""intent"":""move_forward"",""intensity"":""small"",""range_meters"":-1,""confidence"":0.9,""raw_text"":""전진 천천히""}]}
+출력: {""raw_text"":""전진 천천히"",""confidence"":0.0,""commands"":[]}
 
 입력: 포수 사격
 출력: {""raw_text"":""포수 사격"",""confidence"":0.95,""commands"":[{""target_role"":""gunner"",""intent"":""fire"",""intensity"":""normal"",""range_meters"":-1,""confidence"":0.95,""raw_text"":""사격""}]}
 
 입력: 조종수 오른쪽
-출력: {""raw_text"":""조종수 오른쪽"",""confidence"":0.9,""commands"":[{""target_role"":""driver"",""intent"":""turn_right"",""intensity"":""normal"",""range_meters"":-1,""confidence"":0.9,""raw_text"":""오른쪽""}]}
+출력: {""raw_text"":""조종수 오른쪽"",""confidence"":0.0,""commands"":[]}
 
 입력: 사거리 800
 출력: {""raw_text"":""사거리 800"",""confidence"":0.9,""commands"":[{""target_role"":""gunner"",""intent"":""set_range"",""intensity"":""normal"",""range_meters"":800,""confidence"":0.9,""raw_text"":""사거리 800""}]}
 
 입력: 전진하면서 조준
-출력: {""raw_text"":""전진하면서 조준"",""confidence"":0.85,""commands"":[{""target_role"":""driver"",""intent"":""move_forward"",""intensity"":""normal"",""range_meters"":-1,""confidence"":0.85,""raw_text"":""전진""},{""target_role"":""gunner"",""intent"":""aim_at"",""intensity"":""normal"",""range_meters"":-1,""confidence"":0.85,""raw_text"":""조준""}]}
+출력: {""raw_text"":""전진하면서 조준"",""confidence"":0.85,""commands"":[{""target_role"":""gunner"",""intent"":""aim_at"",""intensity"":""normal"",""range_meters"":-1,""confidence"":0.85,""raw_text"":""조준""}]}
+
+입력: 사거리 800 조준
+출력: {""raw_text"":""사거리 800 조준"",""confidence"":0.9,""commands"":[{""target_role"":""gunner"",""intent"":""set_range"",""intensity"":""normal"",""range_meters"":800,""confidence"":0.9,""raw_text"":""사거리 800""},{""target_role"":""gunner"",""intent"":""aim_at"",""intensity"":""normal"",""range_meters"":-1,""confidence"":0.9,""raw_text"":""조준""}]}
 
 입력: 장전수 철갑탄
 출력: {""raw_text"":""장전수 철갑탄"",""confidence"":0.95,""commands"":[{""target_role"":""loader"",""intent"":""load_ap"",""intensity"":""normal"",""range_meters"":-1,""confidence"":0.95,""raw_text"":""철갑탄""}]}
