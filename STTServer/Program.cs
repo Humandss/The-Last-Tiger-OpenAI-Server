@@ -11,8 +11,9 @@ using WebSocketSharp.Server;
 public static class Program
 {
     private static readonly string OpenAIKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+    // GA(/v1/realtime) 모델. 기존 preview 모델(gpt-4o-realtime-preview-*)은 2026-05-07 지원 종료.
     private static readonly Uri RealtimeUri =
-        new Uri("wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2025-06-03");
+        new Uri("wss://api.openai.com/v1/realtime?model=gpt-realtime");
 
     private static ClientWebSocket _realtime;
     private static readonly StringBuilder _modelText = new StringBuilder();
@@ -46,35 +47,51 @@ public static class Program
     {
         _realtime = new ClientWebSocket();
         _realtime.Options.SetRequestHeader("Authorization", $"Bearer {OpenAIKey}");
-        _realtime.Options.SetRequestHeader("OpenAI-Beta", "realtime=v1");
+        // GA API에서는 OpenAI-Beta: realtime=v1 헤더를 보내면 안 됨.
+        //   (보내면 beta_api_shape_disabled 에러로 즉시 연결 종료)
 
         await _realtime.ConnectAsync(RealtimeUri, CancellationToken.None);
         Console.WriteLine("Connected to OpenAI Realtime.");
 
+        // GA session.update 구조:
+        //   - session.type = "realtime" 필수
+        //   - modalities → output_modalities
+        //   - input_audio_format / turn_detection / input_audio_transcription
+        //     모두 session.audio.input.* 아래로 이동
         await SendRealtime(new
         {
             type = "session.update",
             session = new
             {
-                modalities = new[] { "text" },
+                type = "realtime",
+                output_modalities = new[] { "text" },
                 instructions = BuildInstructions(),
-                turn_detection = (object)null,
-                input_audio_format = "pcm16",
-
-                // Whisper prompt: 게임 전용 단어 힌트 → 포수/후진 혼동 등 개선
-                input_audio_transcription = new
+                audio = new
                 {
-                    model = "whisper-1",
-                    prompt = "포수, 조종수, 장전수, 거너, 로더, 드라이버, " +
-                             "전진, 후진, 정지, 멈춰, 좌회전, 우회전, 제자리, 피벗, " +
-                             "사격, 발사, 격발, 조준, 에임, 추적, 락온, 취소, 중지, 정렬, 원위치, " +
-                             "철갑탄, 고폭탄, 장전, 리로드, " +
-                             "사거리, 거리, 레인지, 전속력, 천천히, " +
-                             // Whisper가 아라비아 숫자로 출력하도록 유도
-                             "사거리 100, 사거리 200, 사거리 300, 사거리 500, " +
-                             "사거리 600, 사거리 800, 사거리 1000, 사거리 1200, 사거리 1500, 사거리 2000, " +
-                             // 조준/후진 혼동 방지: 조준을 명시적으로 강조
-                             "포수 조준, 조준, 에임, 겨냥, 포수 사격, 포수 발사"
+                    input = new
+                    {
+                        // pcm16 문자열 → { type, rate } 객체 형태로 변경
+                        format = new { type = "audio/pcm", rate = 24000 },
+                        // 수동 commit 방식 유지 → 자동 턴 감지 끔
+                        turn_detection = (object)null,
+
+                        // Whisper prompt: 게임 전용 단어 힌트 → 포수/후진 혼동 등 개선
+                        //   whisper-1은 GA에서도 prompt 지원 (gpt-realtime-whisper만 미지원)
+                        transcription = new
+                        {
+                            model = "whisper-1",
+                            prompt = "포수, 조종수, 장전수, 거너, 로더, 드라이버, " +
+                                     "전진, 후진, 정지, 멈춰, 좌회전, 우회전, 제자리, 피벗, " +
+                                     "사격, 발사, 격발, 조준, 에임, 추적, 락온, 취소, 중지, 정렬, 원위치, " +
+                                     "철갑탄, 고폭탄, 장전, 리로드, " +
+                                     "사거리, 거리, 레인지, 전속력, 천천히, " +
+                                     // Whisper가 아라비아 숫자로 출력하도록 유도
+                                     "사거리 100, 사거리 200, 사거리 300, 사거리 500, " +
+                                     "사거리 600, 사거리 800, 사거리 1000, 사거리 1200, 사거리 1500, 사거리 2000, " +
+                                     // 조준/후진 혼동 방지: 조준을 명시적으로 강조
+                                     "포수 조준, 조준, 에임, 겨냥, 포수 사격, 포수 발사"
+                        }
+                    }
                 }
             }
         });
@@ -109,7 +126,7 @@ public static class Program
                 type = "response.create",
                 response = new
                 {
-                    modalities = new[] { "text" },
+                    output_modalities = new[] { "text" },
                     max_output_tokens = 400,
                     // response.create에는 instructions 넣지 않음
                     //    session.update의 상세 instructions를 그대로 사용
@@ -175,7 +192,8 @@ public static class Program
 
                 switch (type)
                 {
-                    case "response.text.delta":
+                    // GA에서 response.text.delta → response.output_text.delta 로 이름 변경됨
+                    case "response.output_text.delta":
                         if (doc.RootElement.TryGetProperty("delta", out var d)
                             && d.ValueKind == JsonValueKind.String)
                         {
@@ -363,7 +381,7 @@ public static class Program
     }
 
     private static bool ShouldLog(string type) =>
-        type != "response.text.delta" &&
+        type != "response.output_text.delta" &&
         type != "input_audio_buffer.speech_started" &&
         type != "input_audio_buffer.speech_stopped";
 
